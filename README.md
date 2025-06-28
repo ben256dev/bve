@@ -108,3 +108,41 @@ ffmpeg \
 ```
 
 Note the ``*`` section that was added. If we want to use frames instead of seconds we can use fractions also. Just divide the frame by the fps.
+
+ffmpeg -i https://ben256.com/b/9494ce0c5cd4099458f7dfa4d6e205d1492dd00e08b05d00812ab3c650f1bb8a/reddit_video_017.mp4 \
+    -vf fps=60 -start_number 0 png/clipA_%06d.png
+ffmpeg -i https://ben256.com/b/9494ce0c5cd4099458f7dfa4d6e205d1492dd00e08b05d00812ab3c650f1bb8a/reddit_video_017.mp4 \
+    -vn -acodec pcm_s16le clipA.wav
+ffmpeg -i https://ben256.com/b/8fa9a67b0e08318e749a74378300a630f8dfb4a716e382d04ba6e39554c5c079/reddit_video_031.mp4 \
+    -vf fps=60 -start_number 0 png/clipB_%06d.png
+ffmpeg -i https://ben256.com/b/8fa9a67b0e08318e749a74378300a630f8dfb4a716e382d04ba6e39554c5c079/reddit_video_031.mp4 \
+    -vn -acodec pcm_s16le clipB.wav
+
+### Cross fades
+
+Here we process the audio and video seperately because it is more reliable. We will recombine them later.
+
+```bash
+ffmpeg -framerate 60 -ss 3 -i png/clipA_%06d.png -framerate 60 -i png/clipB_%06d.png \
+-filter_complex "
+    [0:v]format=yuv420p,setsar=1[v0];
+    [1:v]format=yuv420p,setsar=1[v1];
+    [v0][v1]xfade=transition=fade:duration=1:offset=6[v]
+" -map "[v]"  out_video.mp4
+```
+
+In the ``xfade`` parameters we set ``duration`` to 1 and the ``offset`` to 6. For the inputs, we start he first clip 3 seconds in with the ``-ss`` flag. Changing where the clip starts won't have an effect on the duration the clip is on screen so long as the clip is long enough, but setting the duration of the fade to 1 and the offset to 6 means that the clip will be on screen for a total of 7 seconds. This is important to bear in mind for fading the audio.
+
+```bash
+ffmpeg -ss 3 -t 7 -i clipA.wav -i clipB.wav \
+    -filter_complex "[0:a][1:a]acrossfade=d=1:c1=tri:c2=tri[a]" \
+    -map "[a]" out_audio.wav
+```
+
+The audio works the same except for ``acrossfade`` we can't specify an offset. Therefore, we should specify the duration of the first audio file with ``-t`` as the 7 seconds we calculated earlier. This time we set ``d`` for duration.
+
+Finally we can combine the video and audio:
+
+```bash
+ffmpeg -i out_video.mp4 -i out_audio.wav -c:v copy -c:a aac final.mp4
+```
