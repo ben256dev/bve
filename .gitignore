@@ -4,5 +4,7 @@
 *.jpg
 *.png
 *.wav
+*.mov
 
-*.html
+html
+img

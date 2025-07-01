@@ -1,8 +1,8 @@
 ---
-title: Bens Video Editor
+title: Benjamin's Video Editor
 ---
 
-# Ben's Video Editor
+# Benjamin's Video Editor
 
 ## Learning ffmpeg
 
@@ -146,3 +146,142 @@ Finally we can combine the video and audio:
 ```bash
 ffmpeg -i out_video.mp4 -i out_audio.wav -c:v copy -c:a aac final.mp4
 ```
+
+### Overlays
+
+Overlays are necessary for any kind of layering of video or images.
+
+```bash
+ffmpeg \
+    -framerate 60 -i png/clipA_%06d.png \
+    -i png/trollface.png \
+    -filter_complex "[0:v][1:v]overlay=x=main_w/2-overlay_w/2:y=main_h/2-overlay_h/2[out]" \
+    -map "[out]" -c:v libx264 -pix_fmt yuv420p output.mp4
+```
+
+- ``overlay=x=main_w/2-overlay_w/2:y=main_h/2-overlay_h/2`` Centers the image on the screen
+- ``main_w`` and ``main_h`` are the **width** and **height** of the background
+- ``overlay_w`` and ``overlay_h`` are the **width** and **height** of the foreground image
+
+I this gets the point across, but I say we implement a *real* transition.
+
+### Combining Effects
+
+Lets make the trollface appear by zooming in while simultaneously fading in. You'll get the idea once you render the result.
+
+```bash
+ffmpeg \
+    -framerate 60 -i png/clipA_%06d.png \
+    -loop 1 -i png/trollface.png \
+    -filter_complex "
+        [1:v]format=rgba,
+            scale='iw*min(1, 0.2+0.8*t/0.75)':'ih*min(1, 0.2+0.8*t/0.75)':eval=frame,
+            fade=t=in:st=0:d=0.75:alpha=1,
+            setpts=PTS-STARTPTS[ovr];
+
+        [0:v][ovr]overlay=x='(main_w-overlay_w)/2':y='(main_h-overlay_h)/2':shortest=1
+    " \
+    -c:v libx264 -pix_fmt yuv420p output.mp4
+```
+
+- ``t`` is a global time variable.
+- ``min(1, 0.2+0.8*t/0.75)`` is the calculation that does a linear crash-in effect for the scale.
+- ``loop 1`` is necessary for our image input because unlike previously if we don't specify that our image loops, then only one frame will be drawn. To prevent issues arising from looping we also use ``setpts=PTS-STARTPTS[ovr];``
+
+There are some really big issues right now. It would be more consistent if we used an equation to set the alpha similar to what we did with ``scale``. This isn't possible unfortunately. We also can't really use custom easing functions as a result of the limitations of these ffmpeg transitions. That's where ``ffmpeg-gl-transition`` comes in.
+
+## xfade-easing Repository
+
+I had a lot of pain trying to build [this library](https://github.com/scriptituk/xfade-easing?tab=readme-ov-file). Essentially it is a header library plus a patch and requires you to build ffmpeg yourself with a few of the changes and the new header file. It requires different flags from the regular ffmpeg compilation process. A good start is getting all the dependencies installed from the [ffmpeg compilation guide](https://trac.ffmpeg.org/wiki/CompilationGuide).
+
+The dependency ``SVT-AV1`` required specific build steps for a compatible version:
+
+```bash
+cd ~/ffmpeg_sources
+git clone https://gitlab.com/AOMediaCodec/SVT-AV1.git
+cd SVT-AV1
+git checkout v1.4.1
+rm -rf build
+mkdir build && cd build
+cmake -DCMAKE_INSTALL_PREFIX="$HOME/ffmpeg_build" -DCMAKE_BUILD_TYPE=Release ..
+make -j$(nproc)
+make install
+```
+
+I wrote a giant script during my troubleshooting process to replicate my steps easier. Here it is:
+
+```bash
+#!/bin/bash
+
+mkdir -p ~/ffmpeg_sources ~/bin && \
+cd ~/ffmpeg_sources && \
+wget -O xfade-easing.tar.gz https://github.com/scriptituk/xfade-easing/archive/refs/tags/v3.4.1.tar.gz && \
+mkdir -p xfade-easing && \
+tar -xzf xfade-easing.tar.gz -C xfade-easing --strip-components=1 && \
+wget -O ffmpeg-snapshot.tar.xz https://ffmpeg.org/releases/ffmpeg-7.1.1.tar.xz && \
+mkdir -p ffmpeg && \
+tar -xf ffmpeg-snapshot.tar.xz -C ffmpeg --strip-components=1 && \
+cd ffmpeg && \
+rm libavfilter/vf_xfade.c && \
+cp ../xfade-easing/src/vf_xfade.c libavfilter && \
+cp ../xfade-easing/src/xfade-easing.h libavfilter && \
+PATH="$HOME/bin:$PATH" PKG_CONFIG_PATH="$HOME/ffmpeg_build/lib/pkgconfig" ./configure \
+  --prefix="$HOME/ffmpeg_build" \
+  --pkg-config-flags="--static" \
+  --extra-cflags="-I$HOME/ffmpeg_build/include" \
+  --extra-ldflags="-L$HOME/ffmpeg_build/lib" \
+  --extra-libs="-lpthread -lm" \
+  --ld="g++" \
+  --bindir="$HOME/bin" \
+  --enable-gpl \
+  --enable-gnutls \
+  --enable-libaom \
+  --enable-libass \
+  --enable-libfdk-aac \
+  --enable-libfreetype \
+  --enable-libmp3lame \
+  --enable-libopus \
+  --enable-libsvtav1 \
+  --enable-libdav1d \
+  --enable-libvorbis \
+  --enable-libvpx \
+  --enable-libx264 \
+  --enable-libx265 \
+  --enable-nonfree && \
+PATH="$HOME/bin:$PATH" make ECFLAGS=-Wno-declaration-after-statement && \
+make ECFLAGS=-Wno-declaration-after-statement install && \
+hash -r
+```
+
+To verify a successful install, we run ``ffmpeg -hide_banner --help filter=xfade | grep easing``:
+
+<pre><font color="#55FF55"><b>user@shell</b></font>:<font color="#5555FF"><b>~</b></font>$ <code class="nohighlight">ffmpeg -hide_banner --help filter=xfade | grep easing</code>
+   <font color="#FF5555"><b>easing</b></font>            &lt;string&gt;     ..FV....... set cross fade <font color="#FF5555"><b>easing</b></font>
+   reverse           &lt;int&gt;        ..FV....... reverse <font color="#FF5555"><b>easing</b></font>/transition (from 0 to 3) (default 0)</pre>
+
+![wipedown demo](https://raw.githubusercontent.com/scriptituk/xfade-easing/e9d5b1c26cbe8f48116e40bd283964fa38e80cf8/assets/wipedown-cubic.gif)
+
+The above is an example from the ``xfade-easing`` github.
+
+```bash
+ffmpeg -i first.mp4 -i second.mp4 -filter_complex "
+    xfade=duration=3:offset=1:easing=cubic-in-out:transition=wipedown
+    " output.mp4
+```
+
+Lets try our own version using our frame sequence.
+
+```bash
+ffmpeg \
+  -framerate 60 -i png/clipA_%06d.png \
+  -framerate 60 -i png/clipB_%06d.png \
+  -filter_complex "xfade=transition=wipedown:duration=3:offset=1:easing=cubic-in-out" \
+  -pix_fmt yuv420p output.mp4
+```
+
+![xfade-easing cupic wipe test](https://ben256.com/b/fb5e7082e1afc8e0278b6ca532c81411c18e1e7533e90cc3c3210476b6b278bd/wipetest.gif)
+
+It works!
+
+<!-- FOOTER:
+-->
